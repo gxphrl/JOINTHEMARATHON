@@ -369,37 +369,50 @@ $('newId').addEventListener('click',()=>{
 
 let lastBlobUrl=null;
 
+function dataURLToBlob(dataUrl){
+ const parts=dataUrl.split(',');
+ const meta=parts[0];
+ const base64=parts[1];
+ const mimeMatch=meta.match(/data:(.*?);base64/);
+ const mime=mimeMatch?mimeMatch[1]:'image/png';
+ const binary=atob(base64);
+ const len=binary.length;
+ const bytes=new Uint8Array(len);
+ for(let i=0;i<len;i++){bytes[i]=binary.charCodeAt(i);}
+ return new Blob([bytes],{type:mime});
+}
+
 function exportPNG(e){
- // WebKit (Safari, iOS and macOS) silently refuses to navigate to a data: URL
- // as a top-level destination — it's a security restriction, not a bug in our
- // code, and it fails with zero error message, which is why nothing happened.
- // A blob: URL is not subject to that restriction, so we build the PNG as a
- // Blob instead and navigate to that.
- if(e)e.preventDefault();
+ // canvas.toBlob() is asynchronous — even a tiny delay before the resulting
+ // click() can be enough for Safari to stop treating it as user-initiated,
+ // and it then blocks the navigation with no error at all. toDataURL() is
+ // synchronous, so we use that, then convert to a blob: URL by hand (still
+ // synchronously) so the whole thing finishes inside this single click.
  draw();
+ const name=(val('alias')||'atleta').replace(/[^a-z0-9_-]+/gi,'-').toLowerCase();
+ const filename='ficha-atleta-'+name+'.png';
 
- C.toBlob(function(blob){
-   if(!blob){
-     alert('Não foi possível gerar a ficha. Tente novamente.');
-     return;
-   }
-   const name=(val('alias')||'atleta').replace(/[^a-z0-9_-]+/gi,'-').toLowerCase();
-   const filename='ficha-atleta-'+name+'.png';
+ let dataUrl;
+ try{
+   dataUrl=C.toDataURL('image/png');
+ }catch(err){
+   console.error('Falha ao gerar PNG:',err);
+   if(e)e.preventDefault();
+   alert('Não foi possível gerar a ficha. Tente novamente.');
+   return;
+ }
 
-   if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
-   const url=URL.createObjectURL(blob);
-   lastBlobUrl=url;
+ const blob=dataURLToBlob(dataUrl);
+ if(lastBlobUrl)URL.revokeObjectURL(lastBlobUrl);
+ const url=URL.createObjectURL(blob);
+ lastBlobUrl=url;
 
-   const link=$('download');
-   link.href=url;
-   link.download=filename;
-   // We already preventDefault()'d the original tap, so we trigger the
-   // navigation ourselves here. Because canvas.toBlob() resolves almost
-   // immediately, this still runs close enough to the user's tap to count
-   // as user-activated, so Safari allows it — unlike the data: URL case,
-   // which it blocks outright regardless of timing.
-   link.click();
- },'image/png');
+ const link=$('download');
+ link.href=url;
+ link.download=filename;
+ // No preventDefault here: everything above ran synchronously inside this
+ // click, so we let the anchor's own default navigation carry it out — to a
+ // blob: URL, which (unlike a data: URL) Safari actually allows.
 }
 
 $('download').addEventListener('click',exportPNG);
