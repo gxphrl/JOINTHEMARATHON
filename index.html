@@ -127,7 +127,7 @@ canvas{width:100%;max-width:820px;height:auto;background:#ddd;display:block}
 <input id="zoom" type="range" min="100" max="180" value="100">
 </div>
 
-<a id="download" class="download-btn" target="_blank" rel="noopener">GERAR E BAIXAR PNG</a>
+<a id="download" class="download-btn" rel="noopener">GERAR E BAIXAR PNG</a>
 <button class="alt" id="reset">RESETAR</button>
 
 <div class="note">
@@ -160,12 +160,31 @@ function box(x,y,w,h,fill=null,lw=1){
 function text(t,x,y,size,weight=700,align='left'){
  ctx.font=font(size,weight);ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.fillStyle=val('ink');ctx.fillText(t,x,y);
 }
-function photoFilter(){
- const f=val('filter');
- if(f==='bw')return 'grayscale(1) contrast(1.25)';
- if(f==='mono')return 'grayscale(1)';
- if(f==='hard')return 'grayscale(1) contrast(1.8)';
- return 'none';
+function photoFilterMode(){
+ return val('filter');
+}
+function applyPhotoFilter(x,y,w,h){
+ const mode=photoFilterMode();
+ if(mode==='normal')return; // no processing needed
+
+ let contrastAmt=1;
+ if(mode==='bw')contrastAmt=1.25;
+ if(mode==='hard')contrastAmt=1.8;
+ // 'mono' stays at contrastAmt=1: grayscale only, no extra contrast.
+
+ const imgData=ctx.getImageData(x,y,w,h);
+ const d=imgData.data;
+ for(let i=0;i<d.length;i+=4){
+   // Luminance-weighted grayscale (matches the CSS grayscale(1) matrix).
+   let gray=0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2];
+   // Contrast around the midpoint (matches the CSS contrast(amount) formula).
+   gray=(gray-128)*contrastAmt+128;
+   gray=Math.max(0,Math.min(255,gray));
+   d[i]=d[i+1]=d[i+2]=gray;
+ }
+ // putImageData writes raw pixels and ignores any active clip path, which is
+ // fine here since x,y,w,h exactly match the photo rect we already drew.
+ ctx.putImageData(imgData,x,y);
 }
 function fitCover(image,x,y,w,h,zoom=1){
  const iw=image.naturalWidth||image.width, ih=image.naturalHeight||image.height;
@@ -227,9 +246,9 @@ function draw(){
  if(profileImg){
    ctx.save();
    ctx.beginPath();ctx.rect(84,150,216,216);ctx.clip();
-   ctx.filter=photoFilter();
    fitCover(profileImg,84,150,216,216,1);
    ctx.restore();
+   applyPhotoFilter(84,150,216,216);
  }else{
    text('UPLOAD',192,258,18,800,'center');
    text('FOTO',192,280,18,800,'center');
@@ -274,9 +293,9 @@ function draw(){
  if(img){
    ctx.save();
    ctx.beginPath();ctx.rect(px+1,py+1,pw-2,ph-2);ctx.clip();
-   ctx.filter=photoFilter();
    fitCover(img,px+1,py+1,pw-2,ph-2,+val('zoom')/100);
    ctx.restore();
+   applyPhotoFilter(px+1,py+1,pw-2,ph-2);
  }else{
    text('SUA FOTO APARECERÁ AQUI',px+pw/2,py+ph/2,22,800,'center');
  }
@@ -348,40 +367,60 @@ $('newId').addEventListener('click',()=>{
  draw();
 });
 
+let lastBlobUrl=null;
+
 function exportPNG(e){
- // Use a real link navigation rather than a programmatic download/share.
- // This is much more reliable in Safari/iOS, especially inside a Google Sites iframe.
- // IMPORTANT: we must NOT call e.preventDefault() on success — doing so cancels
- // the anchor's own navigation to the generated image, which is exactly what
- // lets iOS Safari open it (so the user can press-and-hold to save to Fotos).
+ // WebKit (Safari, iOS and macOS) silently refuses to navigate to a data: URL
+ // as a top-level destination — it's a security restriction, not a bug in our
+ // code, and it fails with zero error message, which is why nothing happened.
+ // A blob: URL is not subject to that restriction, so we build the PNG as a
+ // Blob instead and navigate to that.
+ if(e)e.preventDefault();
  draw();
- const name=(val('alias')||'atleta').replace(/[^a-z0-9_-]+/gi,'-').toLowerCase();
- const filename='ficha-atleta-'+name+'.png';
 
- // toDataURL is synchronous, so the browser still considers this navigation
- // part of the user's tap/click. Safari can then open the PNG in a new tab,
- // where the user can press/hold it and save it to Photos.
- let dataUrl;
- try{
-   dataUrl=C.toDataURL('image/png');
- }catch(err){
-   console.error('Falha ao gerar PNG:', err);
-   if(e)e.preventDefault(); // only cancel navigation when generation actually failed
-   alert('Não foi possível gerar a ficha. Tente novamente.');
-   return;
- }
+ C.toBlob(function(blob){
+   if(!blob){
+     alert('Não foi possível gerar a ficha. Tente novamente.');
+     return;
+   }
+   const name=(val('alias')||'atleta').replace(/[^a-z0-9_-]+/gi,'-').toLowerCase();
+   const filename='ficha-atleta-'+name+'.png';
 
- const link=$('download');
- link.href=dataUrl;
- link.download=filename;
- // Do not call link.click() here, and do not preventDefault above this line.
- // The link itself is the real user-activated element; letting its default
- // click action run is what avoids Safari blocking the navigation.
+   if(lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+   const url=URL.createObjectURL(blob);
+   lastBlobUrl=url;
+
+   const link=$('download');
+   link.href=url;
+   link.download=filename;
+   // We already preventDefault()'d the original tap, so we trigger the
+   // navigation ourselves here. Because canvas.toBlob() resolves almost
+   // immediately, this still runs close enough to the user's tap to count
+   // as user-activated, so Safari allows it — unlike the data: URL case,
+   // which it blocks outright regardless of timing.
+   link.click();
+ },'image/png');
 }
 
 $('download').addEventListener('click',exportPNG);
 
 $('reset').addEventListener('click',()=>{
+ ['alias','realname','age','nation','height','weight'].forEach(id=>$(id).value='');
+ const year=new Date().getFullYear();
+ const num=Math.floor(1000+Math.random()*9000);
+ $('athleteId').value='BK-'+year+'-'+num;
+ $('paper').value='#d2d2cf';$('ink').value='#111111';
+ $('filter').value='bw';$('zoom').value=100;
+ $('photo').value='';$('profilePhoto').value='';img=null;profileImg=null;
+ if(imageUrl)URL.revokeObjectURL(imageUrl);imageUrl=null;
+ if(profileImageUrl)URL.revokeObjectURL(profileImageUrl);profileImageUrl=null;
+ draw();
+});
+
+draw();
+</script>
+</body>
+</html>
  ['alias','realname','age','nation','height','weight'].forEach(id=>$(id).value='');
  const year=new Date().getFullYear();
  const num=Math.floor(1000+Math.random()*9000);
